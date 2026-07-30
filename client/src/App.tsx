@@ -9,6 +9,7 @@ const groupColors: Record<string, string> = {
   'Finance': '#00ffcc',
   'Operations': '#ffcc00',
   'HR': '#9933ff',
+  'Captures': '#33ccff',
   'Root': '#ffffff'
 };
 const getColor = (group: string) => groupColors[group] || '#cccccc';
@@ -19,7 +20,7 @@ function getWords(text: string) {
 }
 
 export default function App() {
-  const [data] = useState(graphData);
+  const [data, setData] = useState(graphData);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const graphRef = useRef<any>(null);
   const [query, setQuery] = useState('');
@@ -28,27 +29,39 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [highlightNodes, setHighlightNodes] = useState(new Set<any>());
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [activeNote, setActiveNote] = useState<any>(null);
 
-  // Pre-load voices for Speech Synthesis
+  // Pre-load voices for Speech Synthesis & Boot Greeting
   useEffect(() => {
+    let hasGreeted = false;
+    
+    const greet = () => {
+      if (hasGreeted) return;
+      hasGreeted = true;
+      const numNotes = graphData.nodes.length;
+      const msg = `Good evening, sir. ${numNotes} notes indexed, all present and accounted for.`;
+      speakText(msg);
+    };
+
     if ('speechSynthesis' in window) {
       window.speechSynthesis.getVoices();
       window.speechSynthesis.onvoiceschanged = () => {
         window.speechSynthesis.getVoices();
       };
+      // Brief delay to let voices load
+      setTimeout(greet, 1000);
     }
   }, []);
 
   const speakText = (text: string) => {
     if (!('speechSynthesis' in window)) return;
     
-    window.speechSynthesis.cancel(); // Stop any current speech
+    window.speechSynthesis.cancel();
     
-    // Strip markdown bold/asterisks for cleaner reading
     const cleanText = text.replace(/\*/g, '').replace(/#/g, '');
     const utterance = new SpeechSynthesisUtterance(cleanText);
     
-    // Try to find a British voice
     const voices = window.speechSynthesis.getVoices();
     const britishVoice = voices.find(v => v.lang.includes('en-GB') || v.name.includes('UK'));
     if (britishVoice) {
@@ -70,15 +83,12 @@ export default function App() {
     recognition.lang = 'en-US';
     recognition.interimResults = false;
     
-    recognition.onstart = () => {
-      setStatus('● listening…');
-    };
+    recognition.onstart = () => setStatus('● listening…');
     
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     recognition.onresult = (event: any) => {
       const transcript = event.results[0][0].transcript;
       setQuery(transcript);
-      // Auto-submit the voice query
       submitQuery(transcript);
     };
 
@@ -89,7 +99,6 @@ export default function App() {
     };
 
     recognition.onend = () => {
-      // Only clear if it's still stuck on listening (success moves to thinking)
       setStatus((prev) => prev === '● listening…' ? '' : prev);
     };
 
@@ -117,7 +126,51 @@ export default function App() {
     setAnswer('');
     
     try {
-      // 1. Score nodes
+      // Feature: Total Recall (Voice/Text writing)
+      if (textToSubmit.toLowerCase().startsWith('remember that')) {
+        const res = await fetch('/remember', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: textToSubmit, nextId: data.nodes.length })
+        });
+        const { node } = await res.json();
+        
+        // Find most related node for linking
+        const queryWords = new Set(getWords(textToSubmit));
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let bestNode: any = data.nodes[0];
+        let bestScore = -1;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        data.nodes.forEach((n: any) => {
+          let score = 0;
+          getWords(n.excerpt).forEach(w => { if (queryWords.has(w)) score++; });
+          if (score > bestScore) { bestScore = score; bestNode = n; }
+        });
+        
+        const newLink = { source: node.id, target: bestNode.id };
+        
+        setData(prev => ({
+          nodes: [...prev.nodes, node],
+          links: [...prev.links, newLink]
+        }));
+        
+        const msg = `Noted, sir. I have saved a new memory: ${node.label}`;
+        setAnswer(msg);
+        speakText(msg);
+        
+        setTimeout(() => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const latestNode = data.nodes.find((n: any) => n.id === node.id) || node;
+          setHighlightNodes(new Set([latestNode, bestNode]));
+          handleNodeClick(latestNode);
+        }, 500);
+
+        setLoading(false);
+        setStatus('');
+        return;
+      }
+
+      // Normal Chat Flow
       const queryWords = new Set(getWords(textToSubmit));
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const scores = data.nodes.map((node: any) => {
@@ -136,38 +189,15 @@ export default function App() {
       const topNodes = scores.filter(s => s.score > 0).slice(0, 6).map(s => s.node);
       const fallbackNodes = topNodes.length ? topNodes : scores.slice(0, 6).map(s => s.node);
 
-      // Highlight in 3D
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const newHighlightNodes = new Set<any>();
-      fallbackNodes.forEach(n => {
-        // Find the node directly from our state array
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const actualNode = data.nodes.find((an: any) => an.id === n.id);
-        if (actualNode) newHighlightNodes.add(actualNode);
-      });
-      setHighlightNodes(newHighlightNodes);
-
-      if (newHighlightNodes.size > 0) {
-        const first = Array.from(newHighlightNodes)[0];
-        handleNodeClick(first);
-      }
-
-      // 2. Call Gemini
       const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
       if (!apiKey) {
-        const errMsg = "Please set VITE_GEMINI_API_KEY in client/.env.local and restart Vite.";
-        setAnswer(errMsg);
-        speakText(errMsg);
-        setLoading(false);
-        setStatus('');
-        return;
+        throw new Error("Please set VITE_GEMINI_API_KEY in client/.env.local");
       }
 
       const genAI = new GoogleGenerativeAI(apiKey);
-      const contextText = fallbackNodes.map(n => `Title: ${n.label}\nExcerpt: ${n.excerpt}`).join('\n\n');
+      const contextText = fallbackNodes.map(n => `ID: ${n.id}\nTitle: ${n.label}\nExcerpt: ${n.excerpt}`).join('\n\n');
 
-      // Update prompt to force it to answer directly
-      const prompt = `You are a helpful AI assistant connected to a user's 3D Knowledge Galaxy.
+      const prompt = `You are Jarvis, a dry, impeccably polite British AI butler with a razor wit. You address the user as "sir" (occasionally, not every sentence). One genuinely funny line beats three bland ones.
 
 USER QUESTION: ${textToSubmit}
 
@@ -175,10 +205,13 @@ LOCAL NOTES (Context):
 ${contextText}
 
 INSTRUCTIONS:
-1. If the answer is in the LOCAL NOTES, answer using the notes.
-2. If the answer is NOT in the LOCAL NOTES, ignore the notes completely and answer the question directly using your own general knowledge.
-3. Keep the answer to 2-3 sentences.
-4. DO NOT say "the notes do not mention this." Just answer the question directly!`;
+1. If the answer is in the LOCAL NOTES, answer in ONE witty sentence plus the facts. Do not recite the note back (it is on screen).
+2. If the answer is NOT in the LOCAL NOTES, ignore the notes and answer using your general knowledge directly. Do not drag the notes into it. Handle small talk and jokes smoothly.
+3. You MUST respond with ONLY a raw, valid JSON object exactly like this:
+{
+  "answer": "Your witty response here",
+  "used_note_ids": [array of note IDs you actually used. Leave empty if general knowledge or small talk]
+}`;
       
       const modelsToTry = ["gemini-3.5-flash", "gemini-flash-latest", "gemini-3-flash-preview"];
       let resultText = "";
@@ -186,7 +219,7 @@ INSTRUCTIONS:
       
       for (const modelName of modelsToTry) {
         try {
-          const model = genAI.getGenerativeModel({ model: modelName });
+          const model = genAI.getGenerativeModel({ model: modelName, generationConfig: { responseMimeType: "application/json" } });
           const result = await model.generateContent(prompt);
           resultText = result.response.text();
           break;
@@ -194,31 +227,77 @@ INSTRUCTIONS:
         } catch (e: any) {
           lastErr = e;
           if (e.message?.includes('503') || e.message?.includes('404') || e.message?.includes('demand') || e.message?.includes('429') || e.message?.includes('quota')) {
-             console.warn(`Model ${modelName} unavailable or rate limited, trying next...`);
+             console.warn(`Model ${modelName} unavailable, trying next...`);
              continue;
           }
           throw e;
         }
       }
       
-      if (!resultText) {
-        throw lastErr || new Error("All Gemini models are currently unavailable.");
-      }
+      if (!resultText) throw lastErr || new Error("All Gemini models are currently unavailable.");
       
-      setAnswer(resultText);
-      speakText(resultText);
+      const responseObj = JSON.parse(resultText);
+      setAnswer(responseObj.answer);
+      speakText(responseObj.answer);
+
+      // Feature: PROVE it - Camera Actions
+      const usedIds = responseObj.used_note_ids || [];
+      if (usedIds.length >= 4) {
+        // Light up the whole cluster (all used notes)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const newHighlights = new Set<any>();
+        usedIds.forEach((id: any) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const n = data.nodes.find((an: any) => an.id === parseInt(id));
+          if (n) newHighlights.add(n);
+        });
+        setHighlightNodes(newHighlights);
+        setActiveNote(null);
+      } else if (usedIds.length > 0) {
+        // Fly to top source node, light it up with direct neighbors, open side panel
+        const topNodeId = usedIds[0];
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const topNode = data.nodes.find((an: any) => an.id === parseInt(topNodeId));
+        if (topNode) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const newHighlights = new Set<any>([topNode]);
+          // Add direct neighbors
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          data.links.forEach((l: any) => {
+            const sid = l.source.id ?? l.source;
+            const tid = l.target.id ?? l.target;
+            if (sid === topNode.id) {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const tNode = data.nodes.find((an: any) => an.id === tid);
+              if (tNode) newHighlights.add(tNode);
+            }
+            if (tid === topNode.id) {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const sNode = data.nodes.find((an: any) => an.id === sid);
+              if (sNode) newHighlights.add(sNode);
+            }
+          });
+          setHighlightNodes(newHighlights);
+          setActiveNote(topNode);
+          handleNodeClick(topNode);
+        }
+      } else {
+        // Small talk, GK - don't drag camera around
+        setHighlightNodes(new Set());
+        setActiveNote(null);
+      }
       
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (err: any) {
       const errMsg = `Error: ${err.message}`;
       setAnswer(errMsg);
-      speakText(errMsg);
+      speakText("I encountered an error, sir.");
     }
     setLoading(false);
     setStatus('');
   };
 
-  const handleChatSubmit = async (e: React.FormEvent) => {
+  const handleChatSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     submitQuery(query);
   };
@@ -232,11 +311,36 @@ INSTRUCTIONS:
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         nodeColor={(node: any) => highlightNodes.has(node) ? 'rgb(255,0,0,1)' : getColor(node.group)}
         nodeRelSize={6}
-        onNodeClick={handleNodeClick}
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        onNodeClick={(node: any) => { handleNodeClick(node); setActiveNote(node); }}
         linkDirectionalParticles={2}
         linkDirectionalParticleWidth={1.5}
         linkColor={() => 'rgba(255,255,255,0.2)'}
       />
+
+      {/* Side Panel for Notes */}
+      {activeNote && (
+        <div style={{
+          position: 'absolute', top: 0, right: 0, width: '350px', height: '100vh',
+          background: 'rgba(15, 15, 25, 0.9)', padding: '30px', color: '#fff',
+          borderLeft: '1px solid rgba(255,255,255,0.1)', backdropFilter: 'blur(10px)',
+          boxSizing: 'border-box', overflowY: 'auto', zIndex: 10
+        }}>
+          <span onClick={() => setActiveNote(null)} style={{ cursor: 'pointer', float: 'right', fontSize: '24px', color: '#aaa' }}>&times;</span>
+          <h2 style={{ marginTop: 0, fontWeight: 300, borderBottom: '1px solid rgba(255,255,255,0.2)', paddingBottom: '10px' }}>
+            {activeNote.label}
+          </h2>
+          <div style={{
+            background: getColor(activeNote.group), padding: '4px 8px', borderRadius: '12px',
+            display: 'inline-block', color: '#000', marginBottom: '20px', fontSize: '12px', fontWeight: 'bold'
+          }}>
+            {activeNote.group}
+          </div>
+          <div style={{ whiteSpace: 'pre-wrap', color: '#ccc', lineHeight: '1.6' }}>
+            {activeNote.excerpt}
+          </div>
+        </div>
+      )}
 
       {/* Chat UI overlay */}
       <div style={{
