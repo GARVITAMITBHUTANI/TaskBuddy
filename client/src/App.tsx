@@ -65,8 +65,16 @@ export default function App() {
     const cleanText = text.replace(/\*/g, '').replace(/#/g, '');
     const utterance = new SpeechSynthesisUtterance(cleanText);
     const voices = window.speechSynthesis.getVoices();
-    const britishVoice = voices.find(v => v.lang.includes('en-GB') || v.name.includes('UK'));
-    if (britishVoice) utterance.voice = britishVoice;
+    
+    // Hunt for the most authentic Jarvis voice
+    const jarvisVoice = voices.find(v => v.name.includes('Google UK English Male') || v.name.includes('Daniel') || (v.lang === 'en-GB' && v.name.includes('Male'))) 
+                     || voices.find(v => v.lang === 'en-GB');
+                     
+    if (jarvisVoice) {
+      utterance.voice = jarvisVoice;
+      utterance.pitch = 0.9; // Slightly deeper, more robotic/calm
+      utterance.rate = 1.0;
+    }
     
     window.speechSynthesis.speak(utterance);
   };
@@ -270,7 +278,17 @@ INSTRUCTIONS:
         }
       }
       
-      if (!resultText) throw lastErr || new Error("All Gemini models are currently unavailable.");
+      if (!resultText) {
+          if (lastErr?.message?.includes('429') || lastErr?.message?.includes('quota')) {
+               // Graceful fallback for API limits
+               resultText = JSON.stringify({
+                  answer: "I apologize, sir, but my neural connections are currently overwhelmed with requests. Please give me about 30 seconds to recalibrate.",
+                  used_note_ids: []
+               });
+          } else {
+             throw lastErr || new Error("All Gemini models are currently unavailable.");
+          }
+      }
       
       // Clean JSON in case Gemini wrapped it in markdown code blocks
       const cleanJson = resultText.replace(/```json/gi, '').replace(/```/g, '').trim();
