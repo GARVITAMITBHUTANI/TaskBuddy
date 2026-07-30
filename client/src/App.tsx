@@ -93,14 +93,35 @@ export default function App() {
       }
 
       const genAI = new GoogleGenerativeAI(apiKey);
-      const model = genAI.getGenerativeModel({ model: "gemini-3.5-flash" });
-      
       const contextText = fallbackNodes.map(n => `Title: ${n.label}\nExcerpt: ${n.excerpt}`).join('\n\n');
-      
       const prompt = `Answer ONLY from these notes, in 2-3 sentences. Admit it when the notes don't cover it.\n\nNOTES:\n${contextText}\n\nUSER QUESTION: ${query}`;
       
-      const result = await model.generateContent(prompt);
-      setAnswer(result.response.text());
+      const modelsToTry = ["gemini-3.5-flash", "gemini-flash-latest", "gemini-3-flash-preview"];
+      let resultText = "";
+      let lastErr = null;
+      
+      for (const modelName of modelsToTry) {
+        try {
+          const model = genAI.getGenerativeModel({ model: modelName });
+          const result = await model.generateContent(prompt);
+          resultText = result.response.text();
+          break;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } catch (e: any) {
+          lastErr = e;
+          if (e.message?.includes('503') || e.message?.includes('404') || e.message?.includes('demand')) {
+             console.warn(`Model ${modelName} unavailable, trying next...`);
+             continue;
+          }
+          throw e;
+        }
+      }
+      
+      if (!resultText) {
+        throw lastErr || new Error("All Gemini models are currently unavailable.");
+      }
+      
+      setAnswer(resultText);
       
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (err: any) {
