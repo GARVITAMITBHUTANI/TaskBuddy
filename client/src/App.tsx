@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import ForceGraph3D from 'react-force-graph-3d';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import graphData from './graphData.json';
@@ -24,9 +24,77 @@ export default function App() {
   const graphRef = useRef<any>(null);
   const [query, setQuery] = useState('');
   const [answer, setAnswer] = useState('');
+  const [status, setStatus] = useState(''); // '● listening…', '● thinking…'
   const [loading, setLoading] = useState(false);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [highlightNodes, setHighlightNodes] = useState(new Set<any>());
+
+  // Pre-load voices for Speech Synthesis
+  useEffect(() => {
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.getVoices();
+      window.speechSynthesis.onvoiceschanged = () => {
+        window.speechSynthesis.getVoices();
+      };
+    }
+  }, []);
+
+  const speakText = (text: string) => {
+    if (!('speechSynthesis' in window)) return;
+    
+    window.speechSynthesis.cancel(); // Stop any current speech
+    
+    // Strip markdown bold/asterisks for cleaner reading
+    const cleanText = text.replace(/\*/g, '').replace(/#/g, '');
+    const utterance = new SpeechSynthesisUtterance(cleanText);
+    
+    // Try to find a British voice
+    const voices = window.speechSynthesis.getVoices();
+    const britishVoice = voices.find(v => v.lang.includes('en-GB') || v.name.includes('UK'));
+    if (britishVoice) {
+      utterance.voice = britishVoice;
+    }
+    
+    window.speechSynthesis.speak(utterance);
+  };
+
+  const startListening = () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert('Your browser does not support voice input. Please use Chrome.');
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'en-US';
+    recognition.interimResults = false;
+    
+    recognition.onstart = () => {
+      setStatus('● listening…');
+    };
+    
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    recognition.onresult = (event: any) => {
+      const transcript = event.results[0][0].transcript;
+      setQuery(transcript);
+      // Auto-submit the voice query
+      submitQuery(transcript);
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    recognition.onerror = (event: any) => {
+      console.error('Speech recognition error', event.error);
+      setStatus('');
+    };
+
+    recognition.onend = () => {
+      // Only clear if it's still stuck on listening (success moves to thinking)
+      setStatus((prev) => prev === '● listening…' ? '' : prev);
+    };
+
+    recognition.start();
+  };
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handleNodeClick = useCallback((node: any) => {
@@ -41,16 +109,16 @@ export default function App() {
     }
   }, [graphRef]);
 
-  const handleChatSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!query.trim()) return;
+  const submitQuery = async (textToSubmit: string) => {
+    if (!textToSubmit.trim()) return;
 
     setLoading(true);
-    setAnswer('Thinking...');
+    setStatus('● thinking…');
+    setAnswer('');
     
     try {
       // 1. Score nodes
-      const queryWords = new Set(getWords(query));
+      const queryWords = new Set(getWords(textToSubmit));
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const scores = data.nodes.map((node: any) => {
         let score = 0;
@@ -72,7 +140,7 @@ export default function App() {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const newHighlightNodes = new Set<any>();
       fallbackNodes.forEach(n => {
-        // Find the node directly from our state array (it's mutated with x, y, z by the graph)
+        // Find the node directly from our state array
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const actualNode = data.nodes.find((an: any) => an.id === n.id);
         if (actualNode) newHighlightNodes.add(actualNode);
@@ -87,14 +155,19 @@ export default function App() {
       // 2. Call Gemini
       const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
       if (!apiKey) {
-        setAnswer("Please set VITE_GEMINI_API_KEY in client/.env.local and restart Vite.");
+        const errMsg = "Please set VITE_GEMINI_API_KEY in client/.env.local and restart Vite.";
+        setAnswer(errMsg);
+        speakText(errMsg);
         setLoading(false);
+        setStatus('');
         return;
       }
 
       const genAI = new GoogleGenerativeAI(apiKey);
       const contextText = fallbackNodes.map(n => `Title: ${n.label}\nExcerpt: ${n.excerpt}`).join('\n\n');
-      const prompt = `Answer ONLY from these notes, in 2-3 sentences. Admit it when the notes don't cover it.\n\nNOTES:\n${contextText}\n\nUSER QUESTION: ${query}`;
+      
+      // Update prompt to allow fallback to general knowledge
+      const prompt = `First try to answer using ONLY the provided notes. If the notes do NOT contain the answer, you may answer the question using your general internet knowledge base. Keep the answer to 2-3 sentences max.\n\nNOTES:\n${contextText}\n\nUSER QUESTION: ${textToSubmit}`;
       
       const modelsToTry = ["gemini-3.5-flash", "gemini-flash-latest", "gemini-3-flash-preview"];
       let resultText = "";
@@ -122,12 +195,21 @@ export default function App() {
       }
       
       setAnswer(resultText);
+      speakText(resultText);
       
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (err: any) {
-      setAnswer(`Error: ${err.message}`);
+      const errMsg = `Error: ${err.message}`;
+      setAnswer(errMsg);
+      speakText(errMsg);
     }
     setLoading(false);
+    setStatus('');
+  };
+
+  const handleChatSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    submitQuery(query);
   };
 
   return (
@@ -150,6 +232,12 @@ export default function App() {
         position: 'absolute', bottom: '30px', left: '50%', transform: 'translateX(-50%)',
         width: '600px', maxWidth: '90vw', zIndex: 20, display: 'flex', flexDirection: 'column', gap: '10px'
       }}>
+        {status && (
+          <div style={{ color: '#00ffcc', fontSize: '14px', fontStyle: 'italic', paddingLeft: '20px', textShadow: '0 2px 4px rgba(0,0,0,0.5)' }}>
+            {status}
+          </div>
+        )}
+        
         {answer && (
           <div style={{
             background: 'rgba(15, 15, 25, 0.9)', border: '1px solid rgba(255, 255, 255, 0.1)',
@@ -159,6 +247,7 @@ export default function App() {
             {answer}
           </div>
         )}
+        
         <form onSubmit={handleChatSubmit} style={{
           display: 'flex', gap: '10px', background: 'rgba(15, 15, 25, 0.9)',
           border: '1px solid rgba(255, 255, 255, 0.1)', backdropFilter: 'blur(10px)',
@@ -175,6 +264,21 @@ export default function App() {
               padding: '10px 20px', fontSize: '16px', outline: 'none'
             }}
           />
+          
+          <button 
+            type="button" 
+            onClick={startListening} 
+            disabled={loading}
+            style={{
+              background: 'transparent', color: status === '● listening…' ? '#ff3366' : '#fff',
+              border: 'none', fontSize: '20px', cursor: loading ? 'not-allowed' : 'pointer',
+              padding: '0 10px', transition: 'color 0.2s'
+            }} 
+            title="Speak"
+          >
+            🎙
+          </button>
+          
           <button type="submit" disabled={loading} style={{
             background: '#fff', color: '#000', border: 'none', borderRadius: '25px',
             padding: '0 20px', fontWeight: 'bold', cursor: loading ? 'not-allowed' : 'pointer'
