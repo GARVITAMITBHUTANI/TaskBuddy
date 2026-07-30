@@ -193,8 +193,8 @@ INSTRUCTIONS:
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } catch (e: any) {
           lastErr = e;
-          if (e.message?.includes('503') || e.message?.includes('404') || e.message?.includes('demand')) {
-             console.warn(`Model ${modelName} unavailable, trying next...`);
+          if (e.message?.includes('503') || e.message?.includes('404') || e.message?.includes('demand') || e.message?.includes('429') || e.message?.includes('quota')) {
+             console.warn(`Model ${modelName} unavailable or rate limited, trying next...`);
              continue;
           }
           throw e;
