@@ -72,8 +72,9 @@ export default function App() {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const newHighlightNodes = new Set<any>();
       fallbackNodes.forEach(n => {
+        // Find the node directly from our state array (it's mutated with x, y, z by the graph)
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const actualNode = graphRef.current.graphData().nodes.find((an: any) => an.id === n.id);
+        const actualNode = data.nodes.find((an: any) => an.id === n.id);
         if (actualNode) newHighlightNodes.add(actualNode);
       });
       setHighlightNodes(newHighlightNodes);
