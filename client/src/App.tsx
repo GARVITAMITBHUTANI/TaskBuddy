@@ -17,6 +17,8 @@ function getWords(text: string) {
   return (text.toLowerCase().match(/\w+/g) || []);
 }
 
+const AVAILABLE_MODELS = ['gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-flash-latest', 'gemini-3-flash-preview'];
+
 export default function App() {
   const [data, setData] = useState(graphData);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -29,6 +31,9 @@ export default function App() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [activeNote, setActiveNote] = useState<any>(null);
   
+  // Model Selector
+  const [selectedModel, setSelectedModel] = useState('gemini-3.6-flash');
+
   // Voice State
   const [isListening, setIsListening] = useState(false);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -102,18 +107,28 @@ export default function App() {
       const lastIndex = event.results.length - 1;
       const transcript = event.results[lastIndex][0].transcript.toLowerCase();
       
-      // Update UI with what it hears
       setQuery(transcript);
+
+      // 1. Interruption / Stop Command
+      if (transcript.includes('stop jarvis') || transcript.includes('thank you jarvis') || transcript.includes('be quiet') || transcript.includes('shut up')) {
+         if (window.speechSynthesis.speaking) {
+            window.speechSynthesis.cancel();
+            speakText("As you wish, sir.");
+            return;
+         }
+      }
       
-      // Strict Wake Word Logic
+      // 2. Strict Wake Word Logic
       const triggerWords = ['hello jarvis', 'hey jarvis', 'jarvis'];
       const matchedTrigger = triggerWords.find(t => transcript.includes(t));
       
       if (matchedTrigger && !isProcessingRef.current) {
          const command = transcript.split(matchedTrigger)[1].trim();
-         // Only proceed if there's an actual command after the wake word!
-         if (command && command.length > 3) {
-            recognition.stop(); // Stop listening while processing
+         if (command && command.length > 2) {
+            // Stop speech if he's currently talking when a new command arrives
+            if (window.speechSynthesis.speaking) window.speechSynthesis.cancel();
+            
+            recognition.stop(); 
             submitQuery(command);
          }
       }
@@ -220,7 +235,12 @@ export default function App() {
       const genAI = new GoogleGenerativeAI(apiKey);
       const contextText = fallbackNodes.map(n => `ID: ${n.id}\nTitle: ${n.label}\nExcerpt: ${n.excerpt}`).join('\n\n');
 
+      // System clock injection so Jarvis always knows the current time!
+      const currentRealTime = new Date().toLocaleString('en-US', { dateStyle: 'full', timeStyle: 'medium' });
+
       const prompt = `You are Jarvis, a dry, impeccably polite British AI butler with a razor wit. You address the user as "sir".
+
+REAL SYSTEM TIME & DATE: ${currentRealTime}
 
 USER QUESTION: ${textToSubmit}
 
@@ -228,15 +248,17 @@ LOCAL NOTES:
 ${contextText}
 
 INSTRUCTIONS:
-1. If the answer is in the LOCAL NOTES, answer in ONE witty sentence plus the facts. 
-2. If the answer is NOT in the LOCAL NOTES, ignore the notes and answer using your general knowledge directly. Handle small talk and jokes smoothly.
-3. You MUST respond with ONLY a raw, valid JSON object exactly like this:
+1. If asked about the current time or date, answer accurately using the REAL SYSTEM TIME provided above!
+2. If the answer is in the LOCAL NOTES, answer in ONE witty sentence plus the facts. 
+3. If the answer is NOT in the LOCAL NOTES, ignore the notes and answer using your general knowledge or the system clock directly. Handle small talk and jokes smoothly.
+4. You MUST respond with ONLY a raw, valid JSON object:
 {
   "answer": "Your witty response here",
-  "used_note_ids": [array of note IDs you actually used. Leave empty if general knowledge or small talk]
+  "used_note_ids": [array of note IDs you actually used. Leave empty if general knowledge or time queries]
 }`;
       
-      const modelsToTry = ["gemini-3.5-flash", "gemini-flash-latest", "gemini-3-flash-preview"];
+      // Put selected model first, followed by fallbacks
+      const modelsToTry = Array.from(new Set([selectedModel, ...AVAILABLE_MODELS]));
       let resultText = "";
       let lastErr = null;
       
@@ -318,7 +340,6 @@ INSTRUCTIONS:
     
     setLoading(false);
     isProcessingRef.current = false;
-    // Resume listening automatically after speaking
     if (isListening && recognitionRef.current) {
        try { recognitionRef.current.start(); } catch(e){}
     }
@@ -348,18 +369,15 @@ INSTRUCTIONS:
       {/* LEFT SIDEBAR: Inspector & Hubs */}
       <div style={{ position: 'absolute', top: 20, left: 20, bottom: 20, width: 320, zIndex: 10, display: 'flex', flexDirection: 'column', gap: 20, pointerEvents: 'none' }}>
         
-        {/* Header */}
         <div style={{ background: 'rgba(15,15,25,0.7)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: 12, padding: 15, backdropFilter: 'blur(10px)', pointerEvents: 'auto' }}>
           <h1 style={{ fontSize: 16, fontWeight: 800, letterSpacing: 1, margin: '0 0 5px 0', color: '#fff' }}>TASKBUDDY OS</h1>
           <div style={{ fontSize: 12, color: '#888' }}>{data.nodes.length} notes • {data.links.length} connections</div>
         </div>
 
-        {/* Search Bar */}
         <div style={{ background: 'rgba(15,15,25,0.7)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: 12, padding: '10px 15px', backdropFilter: 'blur(10px)', pointerEvents: 'auto' }}>
           <input placeholder="Search the brain..." style={{ background: 'transparent', border: 'none', color: '#fff', width: '100%', outline: 'none', fontSize: 14 }} />
         </div>
 
-        {/* Inspector Panel */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: 'rgba(15,15,25,0.7)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: 12, padding: 20, backdropFilter: 'blur(10px)', pointerEvents: 'auto', overflowY: 'auto' }}>
           <div style={{ fontSize: 11, letterSpacing: 1, color: '#666', fontWeight: 600, marginBottom: 15 }}>INSPECTOR</div>
           {activeNote ? (
@@ -380,10 +398,9 @@ INSTRUCTIONS:
         </div>
       </div>
 
-      {/* RIGHT SIDEBAR: J.A.R.V.I.S Radar & Groups */}
+      {/* RIGHT SIDEBAR: J.A.R.V.I.S Radar, Model Selector & Groups */}
       <div style={{ position: 'absolute', top: 20, right: 20, bottom: 20, width: 280, zIndex: 10, display: 'flex', flexDirection: 'column', gap: 20, pointerEvents: 'none' }}>
         
-        {/* Groups List */}
         <div style={{ background: 'rgba(15,15,25,0.7)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: 12, padding: 20, backdropFilter: 'blur(10px)', pointerEvents: 'auto' }}>
           <div style={{ fontSize: 11, letterSpacing: 1, color: '#666', fontWeight: 600, marginBottom: 15 }}>DATA GROUPS</div>
           {Object.entries(groupColors).map(([group, color]) => {
@@ -402,58 +419,71 @@ INSTRUCTIONS:
           })}
         </div>
 
-        {/* J.A.R.V.I.S. Radar Widget */}
-        <div 
-          onClick={toggleVoiceActivation}
-          style={{ 
-            marginTop: 'auto', marginBottom: 50, cursor: 'pointer', display: 'flex', flexDirection: 'column', 
-            alignItems: 'center', pointerEvents: 'auto', transition: 'transform 0.2s'
-          }}
-          onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.05)'}
-          onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
-        >
-          <div style={{ 
-            width: 200, height: 200, borderRadius: '50%', border: '1px solid rgba(0,255,200,0.1)', 
-            display: 'flex', justifyContent: 'center', alignItems: 'center', position: 'relative',
-            boxShadow: isListening ? '0 0 40px rgba(0,255,200,0.15)' : 'none',
-            background: 'rgba(0,255,200,0.02)', backdropFilter: 'blur(5px)'
-          }}>
-            {/* Outer dotted ring */}
+        {/* J.A.R.V.I.S. Radar & Model Selector Container */}
+        <div style={{ marginTop: 'auto', marginBottom: 30, display: 'flex', flexDirection: 'column', alignItems: 'center', pointerEvents: 'auto' }}>
+          <div 
+            onClick={toggleVoiceActivation}
+            style={{ 
+              cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', transition: 'transform 0.2s'
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.05)'}
+            onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
+          >
             <div style={{ 
-              position: 'absolute', inset: 10, borderRadius: '50%', border: '2px dashed rgba(0,255,200,0.3)',
-              animation: isListening ? 'spin 15s linear infinite' : 'none'
-            }}></div>
-            
-            {/* Inner dashed ring reverse */}
-            <div style={{ 
-              position: 'absolute', inset: 30, borderRadius: '50%', border: '2px dotted rgba(0,255,200,0.4)',
-              animation: isListening ? 'spin 10s linear reverse infinite' : 'none'
-            }}></div>
+              width: 180, height: 180, borderRadius: '50%', border: '1px solid rgba(0,255,200,0.1)', 
+              display: 'flex', justifyContent: 'center', alignItems: 'center', position: 'relative',
+              boxShadow: isListening ? '0 0 40px rgba(0,255,200,0.15)' : 'none',
+              background: 'rgba(0,255,200,0.02)', backdropFilter: 'blur(5px)'
+            }}>
+              <div style={{ 
+                position: 'absolute', inset: 10, borderRadius: '50%', border: '2px dashed rgba(0,255,200,0.3)',
+                animation: isListening ? 'spin 15s linear infinite' : 'none'
+              }}></div>
+              
+              <div style={{ 
+                position: 'absolute', inset: 25, borderRadius: '50%', border: '2px dotted rgba(0,255,200,0.4)',
+                animation: isListening ? 'spin 10s linear reverse infinite' : 'none'
+              }}></div>
 
-            {/* Center Text */}
-            <div style={{ fontSize: '18px', fontWeight: 800, letterSpacing: '3px', color: '#00ffcc', zIndex: 2 }}>
-              J.A.R.V.I.S.
+              <div style={{ fontSize: '16px', fontWeight: 800, letterSpacing: '3px', color: '#00ffcc', zIndex: 2 }}>
+                J.A.R.V.I.S.
+              </div>
+
+              {isListening && (
+                <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '2px solid rgba(0,255,200,0.8)', animation: 'ping 2s cubic-bezier(0, 0, 0.2, 1) infinite' }}></div>
+              )}
+              
+              <style>{`
+                @keyframes spin { 100% { transform: rotate(360deg); } }
+                @keyframes ping { 75%, 100% { transform: scale(1.3); opacity: 0; } }
+              `}</style>
             </div>
-
-            {/* Pulse rings */}
-            {isListening && (
-              <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '2px solid rgba(0,255,200,0.8)', animation: 'ping 2s cubic-bezier(0, 0, 0.2, 1) infinite' }}></div>
-            )}
             
-            <style>{`
-              @keyframes spin { 100% { transform: rotate(360deg); } }
-              @keyframes ping { 75%, 100% { transform: scale(1.3); opacity: 0; } }
-            `}</style>
+            <div style={{ marginTop: 15, textAlign: 'center' }}>
+              <div style={{ color: isListening ? '#00ffcc' : '#666', fontWeight: 700, letterSpacing: 2, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, fontSize: 13 }}>
+                <div style={{ width: 8, height: 8, borderRadius: '50%', background: isListening ? '#00ffcc' : '#666', boxShadow: isListening ? '0 0 10px #00ffcc' : 'none' }} />
+                {isListening ? 'LISTENING' : 'OFFLINE'}
+              </div>
+            </div>
           </div>
-          
-          <div style={{ marginTop: 20, textAlign: 'center' }}>
-            <div style={{ color: isListening ? '#00ffcc' : '#666', fontWeight: 700, letterSpacing: 2, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, fontSize: 14 }}>
-              <div style={{ width: 8, height: 8, borderRadius: '50%', background: isListening ? '#00ffcc' : '#666', boxShadow: isListening ? '0 0 10px #00ffcc' : 'none' }} />
-              {isListening ? 'LISTENING' : 'OFFLINE'}
-            </div>
-            <div style={{ fontSize: 12, color: '#888', marginTop: 8, fontStyle: 'italic' }}>
-              {isListening ? 'say "Jarvis..."' : 'click radar to wake'}
-            </div>
+
+          {/* Model Selector Pill Button (From Screenshot) */}
+          <div 
+            onClick={() => {
+              const nextIndex = (AVAILABLE_MODELS.indexOf(selectedModel) + 1) % AVAILABLE_MODELS.length;
+              setSelectedModel(AVAILABLE_MODELS[nextIndex]);
+            }}
+            style={{
+              marginTop: 15, background: 'rgba(0, 255, 200, 0.05)', border: '1px solid rgba(0, 255, 200, 0.2)',
+              borderRadius: 20, padding: '6px 16px', color: '#00ffcc', fontSize: 11, fontWeight: 700,
+              letterSpacing: 1.5, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
+              boxShadow: '0 4px 15px rgba(0,0,0,0.3)', transition: 'all 0.2s'
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(0, 255, 200, 0.15)'}
+            onMouseLeave={(e) => e.currentTarget.style.background = 'rgba(0, 255, 200, 0.05)'}
+          >
+            <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#00ffcc', boxShadow: '0 0 8px #00ffcc' }} />
+            ● {selectedModel.toUpperCase()}
           </div>
         </div>
       </div>
@@ -461,7 +491,6 @@ INSTRUCTIONS:
       {/* BOTTOM CENTER: Chat UI */}
       <div style={{ position: 'absolute', bottom: 40, left: '50%', transform: 'translateX(-50%)', width: 700, maxWidth: '90vw', zIndex: 20, display: 'flex', flexDirection: 'column', gap: 15 }}>
         
-        {/* Hovering Answer Box */}
         {answer && (
           <div style={{
             background: 'rgba(10, 12, 18, 0.85)', border: '1px solid rgba(0, 255, 200, 0.2)',
@@ -472,7 +501,6 @@ INSTRUCTIONS:
           </div>
         )}
         
-        {/* Sleek Input Bar */}
         <form onSubmit={(e) => { e.preventDefault(); submitQuery(query); }} style={{
           display: 'flex', alignItems: 'center', gap: 15, background: 'rgba(15, 15, 25, 0.8)',
           border: '1px solid rgba(255, 255, 255, 0.1)', backdropFilter: 'blur(20px)',
@@ -494,7 +522,6 @@ INSTRUCTIONS:
              <div style={{ color: '#00ffcc', fontSize: 12, letterSpacing: 1, animation: 'pulse 1.5s infinite' }}>THINKING...</div>
           )}
           
-          {/* Action Icons */}
           <div style={{ display: 'flex', gap: 15, borderLeft: '1px solid rgba(255,255,255,0.1)', paddingLeft: 15 }}>
             <button type="button" style={{ background: 'transparent', border: 'none', color: '#888', cursor: 'pointer', fontSize: 18 }}>🖥️</button>
             <button type="button" style={{ background: 'transparent', border: 'none', color: '#888', cursor: 'pointer', fontSize: 18 }}>🔔</button>
