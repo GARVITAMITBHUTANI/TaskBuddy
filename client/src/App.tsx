@@ -23,18 +23,16 @@ export default function App() {
   const graphRef = useRef<any>(null);
   const [query, setQuery] = useState('');
   const [answer, setAnswer] = useState('');
-  const [status, setStatus] = useState(''); 
   const [loading, setLoading] = useState(false);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [highlightNodes, setHighlightNodes] = useState(new Set<any>());
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [activeNote, setActiveNote] = useState<any>(null);
   
-  // Voice Activation State
+  // Voice State
   const [isListening, setIsListening] = useState(false);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognitionRef = useRef<any>(null);
-  
   const isProcessingRef = useRef(false);
 
   useEffect(() => {
@@ -43,7 +41,7 @@ export default function App() {
       if (hasGreeted) return;
       hasGreeted = true;
       const numNotes = graphData.nodes.length;
-      speakText(`Good evening, sir. ${numNotes} notes indexed, all present and accounted for.`);
+      speakText(`Good evening, sir. ${numNotes} notes indexed, all systems online.`);
     };
 
     if ('speechSynthesis' in window) {
@@ -52,7 +50,6 @@ export default function App() {
       setTimeout(greet, 1000);
     }
     
-    // Cleanup recognition on unmount
     return () => {
        if (recognitionRef.current) recognitionRef.current.stop();
     };
@@ -66,16 +63,14 @@ export default function App() {
     const utterance = new SpeechSynthesisUtterance(cleanText);
     const voices = window.speechSynthesis.getVoices();
     
-    // Hunt for the most authentic Jarvis voice
     const jarvisVoice = voices.find(v => v.name.includes('Google UK English Male') || v.name.includes('Daniel') || (v.lang === 'en-GB' && v.name.includes('Male'))) 
                      || voices.find(v => v.lang === 'en-GB');
                      
     if (jarvisVoice) {
       utterance.voice = jarvisVoice;
-      utterance.pitch = 0.9; // Slightly deeper, more robotic/calm
+      utterance.pitch = 0.9; 
       utterance.rate = 1.0;
     }
-    
     window.speechSynthesis.speak(utterance);
   };
 
@@ -83,7 +78,6 @@ export default function App() {
     if (isListening) {
       if (recognitionRef.current) recognitionRef.current.stop();
       setIsListening(false);
-      setStatus('');
       return;
     }
 
@@ -96,52 +90,42 @@ export default function App() {
 
     const recognition = new SpeechRecognition();
     recognition.lang = 'en-US';
-    recognition.continuous = true; // Listen continuously for wake word
-    recognition.interimResults = false;
+    recognition.continuous = true; 
+    recognition.interimResults = true; 
     
     recognition.onstart = () => {
       setIsListening(true);
-      setStatus('Waiting for "Hello Jarvis"...');
     };
     
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     recognition.onresult = (event: any) => {
       const lastIndex = event.results.length - 1;
       const transcript = event.results[lastIndex][0].transcript.toLowerCase();
+      
+      // Update UI with what it hears
       setQuery(transcript);
       
-      // Wake Word Detection
-      if (transcript.includes('hello jarvis') || transcript.includes('hey jarvis') || transcript.includes('jarvis')) {
-         const triggerWords = ['hello jarvis', 'hey jarvis', 'jarvis'];
-         let command = transcript;
-         for (const trigger of triggerWords) {
-            if (command.includes(trigger)) {
-               command = command.split(trigger)[1].trim();
-               break;
-            }
-         }
-         
-         if (command) {
+      // Strict Wake Word Logic
+      const triggerWords = ['hello jarvis', 'hey jarvis', 'jarvis'];
+      const matchedTrigger = triggerWords.find(t => transcript.includes(t));
+      
+      if (matchedTrigger && !isProcessingRef.current) {
+         const command = transcript.split(matchedTrigger)[1].trim();
+         // Only proceed if there's an actual command after the wake word!
+         if (command && command.length > 3) {
+            recognition.stop(); // Stop listening while processing
             submitQuery(command);
-         } else {
-            speakText("Yes, sir? I am listening.");
-            setStatus('● listening…');
          }
       }
     };
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     recognition.onerror = (event: any) => {
-      console.error('Speech recognition error:', event.error);
-      if (event.error === 'not-allowed') {
-        setIsListening(false);
-        setStatus('');
-      }
+      if (event.error === 'not-allowed') setIsListening(false);
     };
 
     recognition.onend = () => {
-      // Auto-restart if it closes and we still want it listening
-      if (isListening) {
+      if (isListening && !isProcessingRef.current) {
          try { recognition.start(); } catch(e) {}
       }
     };
@@ -165,13 +149,10 @@ export default function App() {
 
   const submitQuery = async (textToSubmit: string) => {
     if (!textToSubmit.trim()) return;
-    
-    // Prevent double-submissions from rapid voice results hitting 429
     if (isProcessingRef.current) return;
+    
     isProcessingRef.current = true;
-
     setLoading(true);
-    setStatus('● thinking…');
     setAnswer('');
     
     try {
@@ -194,11 +175,9 @@ export default function App() {
           if (score > bestScore) { bestScore = score; bestNode = n; }
         });
         
-        const newLink = { source: node.id, target: bestNode.id };
-        
         setData(prev => ({
           nodes: [...prev.nodes, node],
-          links: [...prev.links, newLink]
+          links: [...prev.links, { source: node.id, target: bestNode.id }]
         }));
         
         const msg = `Noted, sir. I have saved a new memory: ${node.label}`;
@@ -213,8 +192,8 @@ export default function App() {
         }, 500);
 
         setLoading(false);
-        setStatus(isListening ? 'Waiting for "Hello Jarvis"...' : '');
         isProcessingRef.current = false;
+        if (isListening && recognitionRef.current) { try { recognitionRef.current.start(); } catch(e){} }
         return;
       }
 
@@ -271,7 +250,6 @@ INSTRUCTIONS:
         } catch (e: any) {
           lastErr = e;
           if (e.message?.includes('503') || e.message?.includes('404') || e.message?.includes('demand') || e.message?.includes('429') || e.message?.includes('quota')) {
-             console.warn(`Model ${modelName} unavailable, trying next...`);
              continue;
           }
           throw e;
@@ -280,7 +258,6 @@ INSTRUCTIONS:
       
       if (!resultText) {
           if (lastErr?.message?.includes('429') || lastErr?.message?.includes('quota')) {
-               // Graceful fallback for API limits
                resultText = JSON.stringify({
                   answer: "I apologize, sir, but my neural connections are currently overwhelmed with requests. Please give me about 30 seconds to recalibrate.",
                   used_note_ids: []
@@ -290,7 +267,6 @@ INSTRUCTIONS:
           }
       }
       
-      // Clean JSON in case Gemini wrapped it in markdown code blocks
       const cleanJson = resultText.replace(/```json/gi, '').replace(/```/g, '').trim();
       const responseObj = JSON.parse(cleanJson);
       
@@ -336,118 +312,195 @@ INSTRUCTIONS:
       
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (err: any) {
-      const errMsg = `Error: ${err.message}`;
-      setAnswer(errMsg);
+      setAnswer(`Error: ${err.message}`);
       speakText("I encountered an error processing that, sir.");
     }
     
     setLoading(false);
-    setStatus(isListening ? 'Waiting for "Hello Jarvis"...' : '');
     isProcessingRef.current = false;
-  };
-
-  const handleChatSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    submitQuery(query);
+    // Resume listening automatically after speaking
+    if (isListening && recognitionRef.current) {
+       try { recognitionRef.current.start(); } catch(e){}
+    }
   };
 
   return (
-    <div style={{ margin: 0, padding: 0, width: '100vw', height: '100vh', overflow: 'hidden', backgroundColor: '#000', position: 'fixed', top: 0, left: 0 }}>
-      <ForceGraph3D
-        ref={graphRef}
-        graphData={data}
-        nodeLabel="label"
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        nodeColor={(node: any) => highlightNodes.has(node) ? 'rgb(255,0,0,1)' : getColor(node.group)}
-        nodeRelSize={6}
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        onNodeClick={(node: any) => { handleNodeClick(node); setActiveNote(node); }}
-        linkDirectionalParticles={2}
-        linkDirectionalParticleWidth={1.5}
-        linkColor={() => 'rgba(255,255,255,0.2)'}
-      />
+    <div style={{ margin: 0, padding: 0, width: '100vw', height: '100vh', overflow: 'hidden', backgroundColor: '#090a0f', position: 'fixed', top: 0, left: 0, fontFamily: 'sans-serif' }}>
+      
+      {/* 3D Canvas Background */}
+      <div style={{ position: 'absolute', inset: 0, zIndex: 0 }}>
+        <ForceGraph3D
+          ref={graphRef}
+          graphData={data}
+          nodeLabel="label"
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          nodeColor={(node: any) => highlightNodes.has(node) ? '#ffffff' : getColor(node.group)}
+          nodeRelSize={6}
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          onNodeClick={(node: any) => { handleNodeClick(node); setActiveNote(node); }}
+          linkDirectionalParticles={(link: any) => highlightNodes.has(link.source) || highlightNodes.has(link.target) ? 4 : 0}
+          linkDirectionalParticleWidth={2}
+          linkColor={() => 'rgba(255,255,255,0.1)'}
+          backgroundColor="#090a0f"
+        />
+      </div>
 
-      {activeNote && (
-        <div style={{
-          position: 'absolute', top: 0, right: 0, width: '350px', height: '100vh',
-          background: 'rgba(15, 15, 25, 0.9)', padding: '30px', color: '#fff',
-          borderLeft: '1px solid rgba(255,255,255,0.1)', backdropFilter: 'blur(10px)',
-          boxSizing: 'border-box', overflowY: 'auto', zIndex: 10
-        }}>
-          <span onClick={() => setActiveNote(null)} style={{ cursor: 'pointer', float: 'right', fontSize: '24px', color: '#aaa' }}>&times;</span>
-          <h2 style={{ marginTop: 0, fontWeight: 300, borderBottom: '1px solid rgba(255,255,255,0.2)', paddingBottom: '10px' }}>
-            {activeNote.label}
-          </h2>
-          <div style={{
-            background: getColor(activeNote.group), padding: '4px 8px', borderRadius: '12px',
-            display: 'inline-block', color: '#000', marginBottom: '20px', fontSize: '12px', fontWeight: 'bold'
+      {/* LEFT SIDEBAR: Inspector & Hubs */}
+      <div style={{ position: 'absolute', top: 20, left: 20, bottom: 20, width: 320, zIndex: 10, display: 'flex', flexDirection: 'column', gap: 20, pointerEvents: 'none' }}>
+        
+        {/* Header */}
+        <div style={{ background: 'rgba(15,15,25,0.7)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: 12, padding: 15, backdropFilter: 'blur(10px)', pointerEvents: 'auto' }}>
+          <h1 style={{ fontSize: 16, fontWeight: 800, letterSpacing: 1, margin: '0 0 5px 0', color: '#fff' }}>TASKBUDDY OS</h1>
+          <div style={{ fontSize: 12, color: '#888' }}>{data.nodes.length} notes • {data.links.length} connections</div>
+        </div>
+
+        {/* Search Bar */}
+        <div style={{ background: 'rgba(15,15,25,0.7)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: 12, padding: '10px 15px', backdropFilter: 'blur(10px)', pointerEvents: 'auto' }}>
+          <input placeholder="Search the brain..." style={{ background: 'transparent', border: 'none', color: '#fff', width: '100%', outline: 'none', fontSize: 14 }} />
+        </div>
+
+        {/* Inspector Panel */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: 'rgba(15,15,25,0.7)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: 12, padding: 20, backdropFilter: 'blur(10px)', pointerEvents: 'auto', overflowY: 'auto' }}>
+          <div style={{ fontSize: 11, letterSpacing: 1, color: '#666', fontWeight: 600, marginBottom: 15 }}>INSPECTOR</div>
+          {activeNote ? (
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 15 }}>
+                <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: '#fff' }}>{activeNote.label}</h3>
+                <div style={{ background: getColor(activeNote.group), width: 12, height: 12, borderRadius: '50%', boxShadow: `0 0 10px ${getColor(activeNote.group)}` }} />
+              </div>
+              <div style={{ fontSize: 13, color: '#aaa', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
+                {activeNote.excerpt}
+              </div>
+            </div>
+          ) : (
+            <div style={{ color: '#555', fontSize: 13, lineHeight: 1.6, fontStyle: 'italic' }}>
+              Click a node to focus it — only that node and its connections light up, and you can read its contents here.
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* RIGHT SIDEBAR: J.A.R.V.I.S Radar & Groups */}
+      <div style={{ position: 'absolute', top: 20, right: 20, bottom: 20, width: 280, zIndex: 10, display: 'flex', flexDirection: 'column', gap: 20, pointerEvents: 'none' }}>
+        
+        {/* Groups List */}
+        <div style={{ background: 'rgba(15,15,25,0.7)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: 12, padding: 20, backdropFilter: 'blur(10px)', pointerEvents: 'auto' }}>
+          <div style={{ fontSize: 11, letterSpacing: 1, color: '#666', fontWeight: 600, marginBottom: 15 }}>DATA GROUPS</div>
+          {Object.entries(groupColors).map(([group, color]) => {
+            if (group === 'Root') return null;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const count = data.nodes.filter((n:any) => n.group === group).length;
+            return (
+              <div key={group} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', fontSize: 13, color: '#aaa' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div style={{ width: 10, height: 10, borderRadius: '50%', background: color, boxShadow: `0 0 8px ${color}` }} />
+                  {group}
+                </div>
+                <div style={{ color: '#555' }}>{count}</div>
+              </div>
+            )
+          })}
+        </div>
+
+        {/* J.A.R.V.I.S. Radar Widget */}
+        <div 
+          onClick={toggleVoiceActivation}
+          style={{ 
+            marginTop: 'auto', marginBottom: 50, cursor: 'pointer', display: 'flex', flexDirection: 'column', 
+            alignItems: 'center', pointerEvents: 'auto', transition: 'transform 0.2s'
+          }}
+          onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.05)'}
+          onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
+        >
+          <div style={{ 
+            width: 200, height: 200, borderRadius: '50%', border: '1px solid rgba(0,255,200,0.1)', 
+            display: 'flex', justifyContent: 'center', alignItems: 'center', position: 'relative',
+            boxShadow: isListening ? '0 0 40px rgba(0,255,200,0.15)' : 'none',
+            background: 'rgba(0,255,200,0.02)', backdropFilter: 'blur(5px)'
           }}>
-            {activeNote.group}
+            {/* Outer dotted ring */}
+            <div style={{ 
+              position: 'absolute', inset: 10, borderRadius: '50%', border: '2px dashed rgba(0,255,200,0.3)',
+              animation: isListening ? 'spin 15s linear infinite' : 'none'
+            }}></div>
+            
+            {/* Inner dashed ring reverse */}
+            <div style={{ 
+              position: 'absolute', inset: 30, borderRadius: '50%', border: '2px dotted rgba(0,255,200,0.4)',
+              animation: isListening ? 'spin 10s linear reverse infinite' : 'none'
+            }}></div>
+
+            {/* Center Text */}
+            <div style={{ fontSize: '18px', fontWeight: 800, letterSpacing: '3px', color: '#00ffcc', zIndex: 2 }}>
+              J.A.R.V.I.S.
+            </div>
+
+            {/* Pulse rings */}
+            {isListening && (
+              <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '2px solid rgba(0,255,200,0.8)', animation: 'ping 2s cubic-bezier(0, 0, 0.2, 1) infinite' }}></div>
+            )}
+            
+            <style>{`
+              @keyframes spin { 100% { transform: rotate(360deg); } }
+              @keyframes ping { 75%, 100% { transform: scale(1.3); opacity: 0; } }
+            `}</style>
           </div>
-          <div style={{ whiteSpace: 'pre-wrap', color: '#ccc', lineHeight: '1.6' }}>
-            {activeNote.excerpt}
+          
+          <div style={{ marginTop: 20, textAlign: 'center' }}>
+            <div style={{ color: isListening ? '#00ffcc' : '#666', fontWeight: 700, letterSpacing: 2, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, fontSize: 14 }}>
+              <div style={{ width: 8, height: 8, borderRadius: '50%', background: isListening ? '#00ffcc' : '#666', boxShadow: isListening ? '0 0 10px #00ffcc' : 'none' }} />
+              {isListening ? 'LISTENING' : 'OFFLINE'}
+            </div>
+            <div style={{ fontSize: 12, color: '#888', marginTop: 8, fontStyle: 'italic' }}>
+              {isListening ? 'say "Jarvis..."' : 'click radar to wake'}
+            </div>
           </div>
         </div>
-      )}
+      </div>
 
-      <div style={{
-        position: 'absolute', bottom: '30px', left: '50%', transform: 'translateX(-50%)',
-        width: '600px', maxWidth: '90vw', zIndex: 20, display: 'flex', flexDirection: 'column', gap: '10px'
-      }}>
-        {status && (
-          <div style={{ color: '#00ffcc', fontSize: '14px', fontStyle: 'italic', paddingLeft: '20px', textShadow: '0 2px 4px rgba(0,0,0,0.5)' }}>
-            {status}
-          </div>
-        )}
+      {/* BOTTOM CENTER: Chat UI */}
+      <div style={{ position: 'absolute', bottom: 40, left: '50%', transform: 'translateX(-50%)', width: 700, maxWidth: '90vw', zIndex: 20, display: 'flex', flexDirection: 'column', gap: 15 }}>
         
+        {/* Hovering Answer Box */}
         {answer && (
           <div style={{
-            background: 'rgba(15, 15, 25, 0.9)', border: '1px solid rgba(255, 255, 255, 0.1)',
-            backdropFilter: 'blur(10px)', borderRadius: '12px', padding: '15px 20px',
-            color: '#fff', lineHeight: '1.5'
+            background: 'rgba(10, 12, 18, 0.85)', border: '1px solid rgba(0, 255, 200, 0.2)',
+            backdropFilter: 'blur(15px)', borderRadius: 16, padding: '20px 25px',
+            color: '#e0e0e0', lineHeight: 1.6, fontSize: 15, boxShadow: '0 10px 30px rgba(0,0,0,0.5)'
           }}>
             {answer}
           </div>
         )}
         
-        <form onSubmit={handleChatSubmit} style={{
-          display: 'flex', gap: '10px', background: 'rgba(15, 15, 25, 0.9)',
-          border: '1px solid rgba(255, 255, 255, 0.1)', backdropFilter: 'blur(10px)',
-          borderRadius: '30px', padding: '5px'
+        {/* Sleek Input Bar */}
+        <form onSubmit={(e) => { e.preventDefault(); submitQuery(query); }} style={{
+          display: 'flex', alignItems: 'center', gap: 15, background: 'rgba(15, 15, 25, 0.8)',
+          border: '1px solid rgba(255, 255, 255, 0.1)', backdropFilter: 'blur(20px)',
+          borderRadius: 30, padding: '8px 20px', boxShadow: '0 10px 40px rgba(0,0,0,0.5)'
         }}>
           <input
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder='Ask or say "Hello Jarvis..."'
-            autoComplete="off"
+            placeholder='Ask - "remind me..." - "good morning" - "show me..."'
+            disabled={loading}
             style={{
               flex: 1, background: 'transparent', border: 'none', color: '#fff',
-              padding: '10px 20px', fontSize: '16px', outline: 'none'
+              fontSize: 15, outline: 'none'
             }}
           />
           
-          <button 
-            type="button" 
-            onClick={toggleVoiceActivation} 
-            disabled={loading}
-            style={{
-              background: 'transparent', color: isListening ? '#ff3366' : '#fff',
-              border: 'none', fontSize: '20px', cursor: loading ? 'not-allowed' : 'pointer',
-              padding: '0 10px', transition: 'color 0.2s',
-              textShadow: isListening ? '0 0 10px #ff3366' : 'none'
-            }} 
-            title={isListening ? "Disable Wake Word" : "Enable Wake Word"}
-          >
-            🎙
-          </button>
+          {loading && (
+             <div style={{ color: '#00ffcc', fontSize: 12, letterSpacing: 1, animation: 'pulse 1.5s infinite' }}>THINKING...</div>
+          )}
           
-          <button type="submit" disabled={loading} style={{
-            background: '#fff', color: '#000', border: 'none', borderRadius: '25px',
-            padding: '0 20px', fontWeight: 'bold', cursor: loading ? 'not-allowed' : 'pointer'
-          }}>
-            Ask
-          </button>
+          {/* Action Icons */}
+          <div style={{ display: 'flex', gap: 15, borderLeft: '1px solid rgba(255,255,255,0.1)', paddingLeft: 15 }}>
+            <button type="button" style={{ background: 'transparent', border: 'none', color: '#888', cursor: 'pointer', fontSize: 18 }}>🖥️</button>
+            <button type="button" style={{ background: 'transparent', border: 'none', color: '#888', cursor: 'pointer', fontSize: 18 }}>🔔</button>
+            <button type="button" style={{ background: 'transparent', border: 'none', color: '#888', cursor: 'pointer', fontSize: 18 }}>💡</button>
+            <button type="button" style={{ background: 'transparent', border: 'none', color: '#888', cursor: 'pointer', fontSize: 18 }}>📂</button>
+          </div>
         </form>
       </div>
     </div>
