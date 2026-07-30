@@ -165,9 +165,20 @@ export default function App() {
 
       const genAI = new GoogleGenerativeAI(apiKey);
       const contextText = fallbackNodes.map(n => `Title: ${n.label}\nExcerpt: ${n.excerpt}`).join('\n\n');
-      
-      // Update prompt to allow fallback to general knowledge
-      const prompt = `First try to answer using ONLY the provided notes. If the notes do NOT contain the answer, you may answer the question using your general internet knowledge base. Keep the answer to 2-3 sentences max.\n\nNOTES:\n${contextText}\n\nUSER QUESTION: ${textToSubmit}`;
+
+      // Update prompt to force it to answer directly
+      const prompt = `You are a helpful AI assistant connected to a user's 3D Knowledge Galaxy.
+
+USER QUESTION: ${textToSubmit}
+
+LOCAL NOTES (Context):
+${contextText}
+
+INSTRUCTIONS:
+1. If the answer is in the LOCAL NOTES, answer using the notes.
+2. If the answer is NOT in the LOCAL NOTES, ignore the notes completely and answer the question directly using your own general knowledge.
+3. Keep the answer to 2-3 sentences.
+4. DO NOT say "the notes do not mention this." Just answer the question directly!`;
       
       const modelsToTry = ["gemini-3.5-flash", "gemini-flash-latest", "gemini-3-flash-preview"];
       let resultText = "";
