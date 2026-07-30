@@ -3,7 +3,6 @@ import ForceGraph3D from 'react-force-graph-3d';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import graphData from './graphData.json';
 
-// Group colors
 const groupColors: Record<string, string> = {
   'Strategy': '#ff3366',
   'Finance': '#00ffcc',
@@ -14,7 +13,6 @@ const groupColors: Record<string, string> = {
 };
 const getColor = (group: string) => groupColors[group] || '#cccccc';
 
-// Basic word extraction for simple scoring
 function getWords(text: string) {
   return (text.toLowerCase().match(/\w+/g) || []);
 }
@@ -25,53 +23,62 @@ export default function App() {
   const graphRef = useRef<any>(null);
   const [query, setQuery] = useState('');
   const [answer, setAnswer] = useState('');
-  const [status, setStatus] = useState(''); // '● listening…', '● thinking…'
+  const [status, setStatus] = useState(''); 
   const [loading, setLoading] = useState(false);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [highlightNodes, setHighlightNodes] = useState(new Set<any>());
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [activeNote, setActiveNote] = useState<any>(null);
+  
+  // Voice Activation State
+  const [isListening, setIsListening] = useState(false);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const recognitionRef = useRef<any>(null);
+  
+  const isProcessingRef = useRef(false);
 
-  // Pre-load voices for Speech Synthesis & Boot Greeting
   useEffect(() => {
     let hasGreeted = false;
-    
     const greet = () => {
       if (hasGreeted) return;
       hasGreeted = true;
       const numNotes = graphData.nodes.length;
-      const msg = `Good evening, sir. ${numNotes} notes indexed, all present and accounted for.`;
-      speakText(msg);
+      speakText(`Good evening, sir. ${numNotes} notes indexed, all present and accounted for.`);
     };
 
     if ('speechSynthesis' in window) {
       window.speechSynthesis.getVoices();
-      window.speechSynthesis.onvoiceschanged = () => {
-        window.speechSynthesis.getVoices();
-      };
-      // Brief delay to let voices load
+      window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
       setTimeout(greet, 1000);
     }
+    
+    // Cleanup recognition on unmount
+    return () => {
+       if (recognitionRef.current) recognitionRef.current.stop();
+    };
   }, []);
 
   const speakText = (text: string) => {
     if (!('speechSynthesis' in window)) return;
-    
     window.speechSynthesis.cancel();
     
     const cleanText = text.replace(/\*/g, '').replace(/#/g, '');
     const utterance = new SpeechSynthesisUtterance(cleanText);
-    
     const voices = window.speechSynthesis.getVoices();
     const britishVoice = voices.find(v => v.lang.includes('en-GB') || v.name.includes('UK'));
-    if (britishVoice) {
-      utterance.voice = britishVoice;
-    }
+    if (britishVoice) utterance.voice = britishVoice;
     
     window.speechSynthesis.speak(utterance);
   };
 
-  const startListening = () => {
+  const toggleVoiceActivation = () => {
+    if (isListening) {
+      if (recognitionRef.current) recognitionRef.current.stop();
+      setIsListening(false);
+      setStatus('');
+      return;
+    }
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) {
@@ -81,27 +88,57 @@ export default function App() {
 
     const recognition = new SpeechRecognition();
     recognition.lang = 'en-US';
+    recognition.continuous = true; // Listen continuously for wake word
     recognition.interimResults = false;
     
-    recognition.onstart = () => setStatus('● listening…');
+    recognition.onstart = () => {
+      setIsListening(true);
+      setStatus('Waiting for "Hello Jarvis"...');
+    };
     
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     recognition.onresult = (event: any) => {
-      const transcript = event.results[0][0].transcript;
+      const lastIndex = event.results.length - 1;
+      const transcript = event.results[lastIndex][0].transcript.toLowerCase();
       setQuery(transcript);
-      submitQuery(transcript);
+      
+      // Wake Word Detection
+      if (transcript.includes('hello jarvis') || transcript.includes('hey jarvis') || transcript.includes('jarvis')) {
+         const triggerWords = ['hello jarvis', 'hey jarvis', 'jarvis'];
+         let command = transcript;
+         for (const trigger of triggerWords) {
+            if (command.includes(trigger)) {
+               command = command.split(trigger)[1].trim();
+               break;
+            }
+         }
+         
+         if (command) {
+            submitQuery(command);
+         } else {
+            speakText("Yes, sir? I am listening.");
+            setStatus('● listening…');
+         }
+      }
     };
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     recognition.onerror = (event: any) => {
-      console.error('Speech recognition error', event.error);
-      setStatus('');
+      console.error('Speech recognition error:', event.error);
+      if (event.error === 'not-allowed') {
+        setIsListening(false);
+        setStatus('');
+      }
     };
 
     recognition.onend = () => {
-      setStatus((prev) => prev === '● listening…' ? '' : prev);
+      // Auto-restart if it closes and we still want it listening
+      if (isListening) {
+         try { recognition.start(); } catch(e) {}
+      }
     };
 
+    recognitionRef.current = recognition;
     recognition.start();
   };
 
@@ -120,13 +157,16 @@ export default function App() {
 
   const submitQuery = async (textToSubmit: string) => {
     if (!textToSubmit.trim()) return;
+    
+    // Prevent double-submissions from rapid voice results hitting 429
+    if (isProcessingRef.current) return;
+    isProcessingRef.current = true;
 
     setLoading(true);
     setStatus('● thinking…');
     setAnswer('');
     
     try {
-      // Feature: Total Recall (Voice/Text writing)
       if (textToSubmit.toLowerCase().startsWith('remember that')) {
         const res = await fetch('/remember', {
           method: 'POST',
@@ -135,7 +175,6 @@ export default function App() {
         });
         const { node } = await res.json();
         
-        // Find most related node for linking
         const queryWords = new Set(getWords(textToSubmit));
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         let bestNode: any = data.nodes[0];
@@ -166,18 +205,17 @@ export default function App() {
         }, 500);
 
         setLoading(false);
-        setStatus('');
+        setStatus(isListening ? 'Waiting for "Hello Jarvis"...' : '');
+        isProcessingRef.current = false;
         return;
       }
 
-      // Normal Chat Flow
       const queryWords = new Set(getWords(textToSubmit));
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const scores = data.nodes.map((node: any) => {
         let score = 0;
         const labelWords = new Set(getWords(node.label));
         const excerptWords = new Set(getWords(node.excerpt));
-        
         queryWords.forEach(word => {
           if (labelWords.has(word)) score += 5;
           if (excerptWords.has(word)) score += 1;
@@ -190,23 +228,21 @@ export default function App() {
       const fallbackNodes = topNodes.length ? topNodes : scores.slice(0, 6).map(s => s.node);
 
       const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-      if (!apiKey) {
-        throw new Error("Please set VITE_GEMINI_API_KEY in client/.env.local");
-      }
+      if (!apiKey) throw new Error("Please set VITE_GEMINI_API_KEY in client/.env.local");
 
       const genAI = new GoogleGenerativeAI(apiKey);
       const contextText = fallbackNodes.map(n => `ID: ${n.id}\nTitle: ${n.label}\nExcerpt: ${n.excerpt}`).join('\n\n');
 
-      const prompt = `You are Jarvis, a dry, impeccably polite British AI butler with a razor wit. You address the user as "sir" (occasionally, not every sentence). One genuinely funny line beats three bland ones.
+      const prompt = `You are Jarvis, a dry, impeccably polite British AI butler with a razor wit. You address the user as "sir".
 
 USER QUESTION: ${textToSubmit}
 
-LOCAL NOTES (Context):
+LOCAL NOTES:
 ${contextText}
 
 INSTRUCTIONS:
-1. If the answer is in the LOCAL NOTES, answer in ONE witty sentence plus the facts. Do not recite the note back (it is on screen).
-2. If the answer is NOT in the LOCAL NOTES, ignore the notes and answer using your general knowledge directly. Do not drag the notes into it. Handle small talk and jokes smoothly.
+1. If the answer is in the LOCAL NOTES, answer in ONE witty sentence plus the facts. 
+2. If the answer is NOT in the LOCAL NOTES, ignore the notes and answer using your general knowledge directly. Handle small talk and jokes smoothly.
 3. You MUST respond with ONLY a raw, valid JSON object exactly like this:
 {
   "answer": "Your witty response here",
@@ -236,16 +272,18 @@ INSTRUCTIONS:
       
       if (!resultText) throw lastErr || new Error("All Gemini models are currently unavailable.");
       
-      const responseObj = JSON.parse(resultText);
+      // Clean JSON in case Gemini wrapped it in markdown code blocks
+      const cleanJson = resultText.replace(/```json/gi, '').replace(/```/g, '').trim();
+      const responseObj = JSON.parse(cleanJson);
+      
       setAnswer(responseObj.answer);
       speakText(responseObj.answer);
 
-      // Feature: PROVE it - Camera Actions
       const usedIds = responseObj.used_note_ids || [];
       if (usedIds.length >= 4) {
-        // Light up the whole cluster (all used notes)
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const newHighlights = new Set<any>();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         usedIds.forEach((id: any) => {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const n = data.nodes.find((an: any) => an.id === parseInt(id));
@@ -254,35 +292,26 @@ INSTRUCTIONS:
         setHighlightNodes(newHighlights);
         setActiveNote(null);
       } else if (usedIds.length > 0) {
-        // Fly to top source node, light it up with direct neighbors, open side panel
         const topNodeId = usedIds[0];
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const topNode = data.nodes.find((an: any) => an.id === parseInt(topNodeId));
         if (topNode) {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const newHighlights = new Set<any>([topNode]);
-          // Add direct neighbors
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           data.links.forEach((l: any) => {
             const sid = l.source.id ?? l.source;
             const tid = l.target.id ?? l.target;
-            if (sid === topNode.id) {
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              const tNode = data.nodes.find((an: any) => an.id === tid);
-              if (tNode) newHighlights.add(tNode);
-            }
-            if (tid === topNode.id) {
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              const sNode = data.nodes.find((an: any) => an.id === sid);
-              if (sNode) newHighlights.add(sNode);
-            }
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            if (sid === topNode.id) { const tNode = data.nodes.find((an: any) => an.id === tid); if (tNode) newHighlights.add(tNode); }
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            if (tid === topNode.id) { const sNode = data.nodes.find((an: any) => an.id === sid); if (sNode) newHighlights.add(sNode); }
           });
           setHighlightNodes(newHighlights);
           setActiveNote(topNode);
           handleNodeClick(topNode);
         }
       } else {
-        // Small talk, GK - don't drag camera around
         setHighlightNodes(new Set());
         setActiveNote(null);
       }
@@ -291,10 +320,12 @@ INSTRUCTIONS:
     } catch (err: any) {
       const errMsg = `Error: ${err.message}`;
       setAnswer(errMsg);
-      speakText("I encountered an error, sir.");
+      speakText("I encountered an error processing that, sir.");
     }
+    
     setLoading(false);
-    setStatus('');
+    setStatus(isListening ? 'Waiting for "Hello Jarvis"...' : '');
+    isProcessingRef.current = false;
   };
 
   const handleChatSubmit = (e: React.FormEvent) => {
@@ -318,7 +349,6 @@ INSTRUCTIONS:
         linkColor={() => 'rgba(255,255,255,0.2)'}
       />
 
-      {/* Side Panel for Notes */}
       {activeNote && (
         <div style={{
           position: 'absolute', top: 0, right: 0, width: '350px', height: '100vh',
@@ -342,7 +372,6 @@ INSTRUCTIONS:
         </div>
       )}
 
-      {/* Chat UI overlay */}
       <div style={{
         position: 'absolute', bottom: '30px', left: '50%', transform: 'translateX(-50%)',
         width: '600px', maxWidth: '90vw', zIndex: 20, display: 'flex', flexDirection: 'column', gap: '10px'
@@ -372,7 +401,7 @@ INSTRUCTIONS:
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Ask your knowledge galaxy..."
+            placeholder='Ask or say "Hello Jarvis..."'
             autoComplete="off"
             style={{
               flex: 1, background: 'transparent', border: 'none', color: '#fff',
@@ -382,14 +411,15 @@ INSTRUCTIONS:
           
           <button 
             type="button" 
-            onClick={startListening} 
+            onClick={toggleVoiceActivation} 
             disabled={loading}
             style={{
-              background: 'transparent', color: status === '● listening…' ? '#ff3366' : '#fff',
+              background: 'transparent', color: isListening ? '#ff3366' : '#fff',
               border: 'none', fontSize: '20px', cursor: loading ? 'not-allowed' : 'pointer',
-              padding: '0 10px', transition: 'color 0.2s'
+              padding: '0 10px', transition: 'color 0.2s',
+              textShadow: isListening ? '0 0 10px #ff3366' : 'none'
             }} 
-            title="Speak"
+            title={isListening ? "Disable Wake Word" : "Enable Wake Word"}
           >
             🎙
           </button>
